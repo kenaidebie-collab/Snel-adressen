@@ -40,6 +40,16 @@
   li .km{margin-left:auto;color:var(--mute);white-space:nowrap;text-align:right;font-size:.92rem}
   li.err{border-color:var(--hot)}
   li.err::before{content:"!";background:var(--hot);color:#fff}
+  .add{display:flex;gap:8px}
+  .add input{flex:1}
+  .add button{flex:none;padding:12px 16px}
+  .hint{color:var(--mute);font-size:.88rem;margin:6px 2px 0}
+  ul.chips{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:6px}
+  ul.chips li{counter-increment:none;margin:0;padding:8px 8px 8px 14px;border-radius:12px;background:var(--bg);gap:8px}
+  ul.chips li::before{content:none}
+  ul.chips li span{flex:1;overflow-wrap:anywhere}
+  ul.chips button{background:transparent;color:var(--mute);padding:4px 10px;font-size:1.2rem;line-height:1;border-radius:8px}
+  .count{font-weight:600;margin:16px 0 0}
 </style>
 </head>
 <body>
@@ -47,19 +57,31 @@
   <header><div class="logo" aria-hidden="true"></div><h1>Adressen sorteren<small>Van dichtbij naar ver, vanaf Sushi at Home</small></h1></header>
 
   <div class="panel">
-  <label for="start">Startadres</label>
-  <input id="start" value="Sushi at Home, 's-Hertogenbosch" autocomplete="street-address">
+    <label for="start">Startadres</label>
+    <input id="start" value="Sushi at Home, 's-Hertogenbosch" autocomplete="off">
 
-  <label for="addr">Adressen (één per regel)</label>
-  <textarea id="addr" placeholder="Straat 12, Utrecht&#10;Markt 5, Eindhoven"></textarea>
+    <label for="city">Standaard plaats</label>
+    <input id="city" value="'s-Hertogenbosch" autocomplete="off">
+    <div class="hint">Wordt achter een adres gezet als je zelf geen plaats typt.</div>
 
-  <label for="by">Sorteren op</label>
-  <select id="by"><option value="d">Rijafstand</option><option value="t">Reistijd</option></select>
+    <label for="new">Adres toevoegen</label>
+    <div class="add">
+      <input id="new" placeholder="Bijv. Tweede Slagen 98" autocomplete="off" autocapitalize="words" enterkeyhint="done">
+      <button id="plus" type="button">Voeg toe</button>
+    </div>
+    <div class="hint">Na het huisnummer plus een spatie is het adres klaar. Of tik op Enter.</div>
 
-  <div class="row">
-    <button id="go">Sorteer</button>
-    <button id="copy" class="sec" hidden>Kopieer lijst</button>
-  </div>
+    <div class="count" id="count"></div>
+    <ul class="chips" id="chips"></ul>
+
+    <label for="by">Sorteren op</label>
+    <select id="by"><option value="d">Rijafstand</option><option value="t">Reistijd</option></select>
+
+    <div class="row">
+      <button id="go">Sorteer</button>
+      <button id="copy" class="sec" hidden>Kopieer lijst</button>
+      <button id="clear" class="sec">Alles wissen</button>
+    </div>
   </div>
   <div id="status" role="status"></div>
   <button id="maps" class="big" hidden>Open in Google Maps</button>
@@ -68,11 +90,50 @@
 
 <script>
 const $ = id => document.getElementById(id);
+let entries = [];
 let sorted = [];
+try{ entries = JSON.parse(localStorage.getItem('entries')||'[]'); }catch(e){}
 const cache = (()=>{ try{ return JSON.parse(localStorage.getItem('geo')||'{}'); }catch(e){ return {}; } })();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const fmtKm = m => (m/1000).toFixed(1).replace('.',',') + ' km';
 const fmtT = s => { const m=Math.round(s/60); return m<60 ? m+' min' : Math.floor(m/60)+' u '+(m%60)+' min'; };
+const full = a => a.includes(',') ? a : a + ', ' + ($('city').value.trim() || '');
+const save = () => { try{ localStorage.setItem('entries', JSON.stringify(entries)); }catch(e){} };
+
+function render(){
+  $('count').textContent = entries.length ? entries.length + (entries.length===1 ? ' adres' : ' adressen') : '';
+  const ul = $('chips'); ul.innerHTML = '';
+  entries.forEach((a,i)=>{
+    const li = document.createElement('li');
+    const sp = document.createElement('span'); sp.textContent = a;
+    const b = document.createElement('button'); b.type='button'; b.textContent='×'; b.setAttribute('aria-label','Verwijder '+a);
+    b.onclick = () => { entries.splice(i,1); save(); render(); };
+    li.append(sp,b); ul.appendChild(li);
+  });
+}
+
+function add(text){
+  const t = text.replace(/^\s*(\d+[.)]|[-*•])\s+/,'').trim();
+  if (!t) return;
+  if (!entries.some(e=>e.toLowerCase()===t.toLowerCase())) entries.push(t);
+  save(); render();
+}
+
+function addMany(text){ text.split(/[\n;|]+/).forEach(add); }
+
+$('new').addEventListener('input', e => {
+  const v = $('new').value;
+  if (/[\n;|]/.test(v)) { addMany(v); $('new').value=''; return; }
+  if (/\S\s\d+[a-zA-Z]?(-\d+)?\s$/.test(v)) { add(v); $('new').value=''; }
+});
+$('new').addEventListener('paste', e => {
+  const t = (e.clipboardData||window.clipboardData).getData('text');
+  if (/[\n;|]/.test(t)) { e.preventDefault(); addMany(t); }
+});
+$('new').addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); add($('new').value); $('new').value=''; } });
+$('plus').onclick = () => { add($('new').value); $('new').value=''; $('new').focus(); };
+$('clear').onclick = () => { entries=[]; save(); render(); $('out').innerHTML=''; $('maps').hidden=$('copy').hidden=true; $('status').textContent=''; };
+render();
 
 async function geocode(q){
   if (cache[q]) return cache[q];
@@ -87,8 +148,9 @@ async function geocode(q){
 }
 
 $('go').onclick = async () => {
+  if ($('new').value.trim()) { add($('new').value); $('new').value=''; }
   const start = $('start').value.trim();
-  const lines = [...new Set($('addr').value.split('\n').map(s=>s.trim()).filter(Boolean))];
+  const lines = entries.slice();
   if (!start || !lines.length){ $('status').textContent='Vul een startadres en minstens één adres in.'; return; }
   if (lines.length > 90){ $('status').textContent='Maximaal 90 adressen tegelijk.'; return; }
   $('go').disabled = true; $('out').innerHTML=''; $('maps').hidden=$('copy').hidden=true;
@@ -100,9 +162,10 @@ $('go').onclick = async () => {
     const items=[];
     for (let i=0;i<lines.length;i++){
       $('status').textContent=`Adressen opzoeken ${i+1} van ${lines.length}…`;
-      const wasCached = !!cache[lines[i]];
-      const p = await geocode(lines[i]);
-      items.push({addr:lines[i], p, d:null, t:null});
+      const q = full(lines[i]);
+      const wasCached = !!cache[q];
+      const p = await geocode(q);
+      items.push({addr:lines[i], q, p, d:null, t:null});
       if (!wasCached) await sleep(1100);
     }
 
@@ -145,15 +208,13 @@ $('go').onclick = async () => {
 
 $('maps').onclick = () => {
   const start=$('start').dataset.s;
-  let stops=sorted.map(x=>x.addr);
-  let note='';
-  if (stops.length > 10){ stops=stops.slice(0,10); note='Google Maps neemt maximaal 10 stops; de eerste 10 zijn doorgestuurd.'; }
+  let stops=sorted.map(x=>x.q);
+  if (stops.length > 10){ stops=stops.slice(0,10); $('status').textContent='Google Maps neemt maximaal 10 stops; de eerste 10 zijn doorgestuurd.'; }
   const dest=stops.pop();
   const u='https://www.google.com/maps/dir/?api=1&origin='+encodeURIComponent(start)
     +'&destination='+encodeURIComponent(dest)
     +(stops.length?'&waypoints='+encodeURIComponent(stops.join('|')):'')
     +'&travelmode=driving';
-  if (note) $('status').textContent=note;
   window.location.href=u;
 };
 
