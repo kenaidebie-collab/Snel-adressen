@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adressen sorteren (Google rijafstand)</title>
+<style>
+  :root{--bg:#f3f5f7;--card:#fff;--ink:#1d2733;--mute:#667585;--line:#d9e0e6;--acc:#1f6fb2;--acc-ink:#fff}
+  @media (prefers-color-scheme:dark){:root{--bg:#14191f;--card:#1c232b;--ink:#e8edf2;--mute:#8d9aa8;--line:#2d3742;--acc:#4a9be0;--acc-ink:#0c1117}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;padding:16px}
+  main{max-width:560px;margin:0 auto}
+  h1{font-size:1.4rem;margin:8px 0 16px}
+  label{display:block;font-weight:600;margin:14px 0 6px}
+  input,textarea,select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+  textarea{min-height:140px;resize:vertical}
+  input:focus,textarea:focus,select:focus,button:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  button{padding:11px 16px;border:0;border-radius:8px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:600;cursor:pointer}
+  button.sec{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+  button:disabled{opacity:.5;cursor:wait}
+  details{margin-top:12px;color:var(--mute)}
+  #status{color:var(--mute);margin-top:12px;min-height:1.5em}
+  ol{padding:0;margin:16px 0 0;list-style:none;counter-reset:n}
+  li{counter-increment:n;display:flex;gap:12px;align-items:baseline;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+  li::before{content:counter(n);font-weight:700;color:var(--acc);min-width:1.4em}
+  li .km{margin-left:auto;color:var(--mute);white-space:nowrap;text-align:right}
+  li.err{border-color:#c0392b}
+  li.err::before{content:"!";color:#c0392b}
+</style>
+</head>
+<body>
+<main>
+  <h1>Adressen sorteren op rijafstand</h1>
+
+  <details id="keybox">
+    <summary>Google API-sleutel</summary>
+    <label for="key">Sleutel (wordt alleen in deze browser bewaard)</label>
+    <input id="key" type="password" autocomplete="off" placeholder="AIza…">
+  </details>
+
+  <label for="start">Startadres</label>
+  <input id="start" value="Sushi at Home, 's-Hertogenbosch" autocomplete="street-address">
+
+  <label for="addr">Adressen (één per regel)</label>
+  <textarea id="addr" placeholder="Straat 12, Utrecht&#10;Markt 5, Eindhoven"></textarea>
+
+  <label for="by">Sorteren op</label>
+  <select id="by"><option value="d">Afstand</option><option value="t">Reistijd</option></select>
+
+  <div class="row">
+    <button id="go">Sorteer</button>
+    <button id="maps" class="sec" hidden>Open in Google Maps</button>
+    <button id="copy" class="sec" hidden>Kopieer lijst</button>
+  </div>
+  <div id="status" role="status"></div>
+  <ol id="out"></ol>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let sorted = [];
+try{ $('key').value = localStorage.getItem('gkey') || ''; }catch(e){}
+if (!$('key').value) $('keybox').open = true;
+
+const fmtKm = m => (m/1000).toFixed(1).replace('.',',') + ' km';
+const fmtT = s => { const m=Math.round(s/60); return m<60 ? m+' min' : Math.floor(m/60)+' u '+(m%60)+' min'; };
+
+$('go').onclick = async () => {
+  const key = $('key').value.trim();
+  const start = $('start').value.trim();
+  const lines = [...new Set($('addr').value.split('\n').map(s=>s.trim()).filter(Boolean))];
+  if (!key){ $('keybox').open=true; $('status').textContent='Vul eerst je Google API-sleutel in.'; return; }
+  if (!start || !lines.length){ $('status').textContent='Vul een startadres en minstens één adres in.'; return; }
+  if (lines.length > 100){ $('status').textContent='Maximaal 100 adressen tegelijk.'; return; }
+  try{ localStorage.setItem('gkey', key); }catch(e){}
+
+  $('go').disabled = true; $('out').innerHTML=''; $('maps').hidden=$('copy').hidden=true;
+  $('status').textContent='Rijafstanden ophalen…';
+  try{
+    const res = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Goog-Api-Key':key,
+        'X-Goog-FieldMask':'originIndex,destinationIndex,distanceMeters,duration,status,condition'
+      },
+      body: JSON.stringify({
+        origins:[{waypoint:{address:start}}],
+        destinations: lines.map(a=>({waypoint:{address:a}})),
+        travelMode:'DRIVE',
+        languageCode:'nl', regionCode:'NL'
+      })
+    });
+    const data = await res.json();
+    if (!res.ok){
+      $('status').textContent = 'Google meldt: ' + (data.error?.message || res.status);
+      return;
+    }
+    const items = lines.map(a=>({addr:a, d:null, t:null}));
+    data.forEach(r=>{
+      if (r.condition === 'ROUTE_EXISTS' && r.destinationIndex!=null){
+        items[r.destinationIndex].d = r.distanceMeters;
+        items[r.destinationIndex].t = parseInt(r.duration);
+      }
+    });
+    const k = $('by').value;
+    sorted = items.filter(x=>x.d!=null).sort((a,b)=>a[k]-b[k]);
+    const bad = items.filter(x=>x.d==null);
+
+    const frag = document.createDocumentFragment();
+    sorted.forEach(x=>{
+      const li=document.createElement('li');
+      li.innerHTML='<span></span><span class="km"></span>';
+      li.children[0].textContent=x.addr;
+      li.children[1].textContent=fmtKm(x.d)+' · '+fmtT(x.t);
+      frag.appendChild(li);
+    });
+    bad.forEach(x=>{
+      const li=document.createElement('li'); li.className='err';
+      li.innerHTML='<span></span><span class="km">geen route</span>';
+      li.children[0].textContent=x.addr; frag.appendChild(li);
+    });
+    $('out').appendChild(frag);
+    $('status').textContent='Gesorteerd op rijafstand vanaf je startadres.';
+    $('maps').hidden=$('copy').hidden=!sorted.length;
+    $('start').dataset.s=start;
+  }catch(e){
+    $('status').textContent='Er ging iets mis. Controleer je internetverbinding en sleutel.';
+  }finally{ $('go').disabled=false; }
+};
+
+$('maps').onclick = () => {
+  const start=$('start').dataset.s;
+  const stops=sorted.map(x=>x.addr);
+  const dest=stops.pop();
+  const u='https://www.google.com/maps/dir/?api=1&origin='+encodeURIComponent(start)
+    +'&destination='+encodeURIComponent(dest)
+    +(stops.length?'&waypoints='+encodeURIComponent(stops.join('|')):'')
+    +'&travelmode=driving';
+  window.open(u,'_blank');
+};
+
+$('copy').onclick = async () => {
+  const t=sorted.map((x,i)=>`${i+1}. ${x.addr} (${fmtKm(x.d)}, ${fmtT(x.t)})`).join('\n');
+  try{ await navigator.clipboard.writeText(t); $('status').textContent='Gekopieerd.'; }
+  catch(e){ $('status').textContent='Kopiëren mislukt.'; }
+};
+</script>
+</body>
+</html>
