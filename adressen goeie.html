@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adressen sorteren</title>
+<style>
+  :root{
+    --bg:#eef3ec;--card:#ffffff;--ink:#14281f;--mute:#5d7367;--line:#d3dfd5;
+    --acc:#2e7d3f;--acc-ink:#ffffff;--hot:#e0593f;--soft:#e3eee4;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --bg:#0e1d17;--card:#162b23;--ink:#eaf3ec;--mute:#8fa89a;--line:#244036;
+    --acc:#9bd24b;--acc-ink:#10210f;--hot:#ff8a6b;--soft:#1d372d;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 ui-rounded,"SF Pro Rounded",system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px 16px 40px}
+  main{max-width:560px;margin:0 auto}
+  header{display:flex;align-items:center;gap:12px;margin:6px 0 22px}
+  .logo{width:44px;height:44px;border-radius:50%;background:var(--card);border:6px solid var(--acc);position:relative;flex:none}
+  .logo::after{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--hot)}
+  h1{font-size:1.5rem;line-height:1.15;margin:0;letter-spacing:-.01em}
+  h1 small{display:block;font-size:.85rem;font-weight:500;color:var(--mute);margin-top:2px;letter-spacing:0}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:6px 16px 18px}
+  label{display:block;font-weight:600;margin:14px 0 6px}
+  input,textarea,select{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink);font:inherit}
+  textarea{min-height:150px;resize:vertical}
+  input:focus,textarea:focus,select:focus,button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}
+  button{padding:12px 18px;border:0;border-radius:12px;background:var(--acc);color:var(--acc-ink);font:inherit;font-weight:700;cursor:pointer}
+  button.sec{background:transparent;color:var(--acc);border:1.5px solid var(--acc)}
+  button.big{width:100%;padding:16px;font-size:1.05rem;border-radius:14px}
+  button:disabled{opacity:.5;cursor:wait}
+  #status{color:var(--mute);margin:14px 2px 0;min-height:1.5em}
+  #maps{margin-top:14px}
+  ol{padding:0;margin:18px 0 0;list-style:none;counter-reset:n}
+  li{counter-increment:n;display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px}
+  li::before{content:counter(n);flex:none;width:28px;height:28px;border-radius:50%;background:var(--soft);color:var(--acc);font-weight:700;font-size:.9rem;display:grid;place-items:center}
+  li:first-child::before{background:var(--acc);color:var(--acc-ink)}
+  li .km{margin-left:auto;color:var(--mute);white-space:nowrap;text-align:right;font-size:.92rem}
+  li.err{border-color:var(--hot)}
+  li.err::before{content:"!";background:var(--hot);color:#fff}
+</style>
+</head>
+<body>
+<main>
+  <header><div class="logo" aria-hidden="true"></div><h1>Adressen sorteren<small>Van dichtbij naar ver, vanaf Sushi at Home</small></h1></header>
+
+  <div class="panel">
+  <label for="start">Startadres</label>
+  <input id="start" value="Sushi at Home, 's-Hertogenbosch" autocomplete="street-address">
+
+  <label for="addr">Adressen (één per regel)</label>
+  <textarea id="addr" placeholder="Straat 12, Utrecht&#10;Markt 5, Eindhoven"></textarea>
+
+  <label for="by">Sorteren op</label>
+  <select id="by"><option value="d">Rijafstand</option><option value="t">Reistijd</option></select>
+
+  <div class="row">
+    <button id="go">Sorteer</button>
+    <button id="copy" class="sec" hidden>Kopieer lijst</button>
+  </div>
+  </div>
+  <div id="status" role="status"></div>
+  <button id="maps" class="big" hidden>Open in Google Maps</button>
+  <ol id="out"></ol>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let sorted = [];
+const cache = (()=>{ try{ return JSON.parse(localStorage.getItem('geo')||'{}'); }catch(e){ return {}; } })();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fmtKm = m => (m/1000).toFixed(1).replace('.',',') + ' km';
+const fmtT = s => { const m=Math.round(s/60); return m<60 ? m+' min' : Math.floor(m/60)+' u '+(m%60)+' min'; };
+
+async function geocode(q){
+  if (cache[q]) return cache[q];
+  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
+  const res = await fetch(url, {headers:{'Accept-Language':'nl'}});
+  const j = await res.json();
+  if (!j.length) return null;
+  const p = {lat:+j[0].lat, lon:+j[0].lon};
+  cache[q] = p;
+  try{ localStorage.setItem('geo', JSON.stringify(cache)); }catch(e){}
+  return p;
+}
+
+$('go').onclick = async () => {
+  const start = $('start').value.trim();
+  const lines = [...new Set($('addr').value.split('\n').map(s=>s.trim()).filter(Boolean))];
+  if (!start || !lines.length){ $('status').textContent='Vul een startadres en minstens één adres in.'; return; }
+  if (lines.length > 90){ $('status').textContent='Maximaal 90 adressen tegelijk.'; return; }
+  $('go').disabled = true; $('out').innerHTML=''; $('maps').hidden=$('copy').hidden=true;
+  try{
+    $('status').textContent='Startadres opzoeken…';
+    const s = await geocode(start);
+    if (!s){ $('status').textContent='Startadres niet gevonden. Vul het straatadres in.'; return; }
+
+    const items=[];
+    for (let i=0;i<lines.length;i++){
+      $('status').textContent=`Adressen opzoeken ${i+1} van ${lines.length}…`;
+      const wasCached = !!cache[lines[i]];
+      const p = await geocode(lines[i]);
+      items.push({addr:lines[i], p, d:null, t:null});
+      if (!wasCached) await sleep(1100);
+    }
+
+    const ok = items.filter(x=>x.p);
+    if (ok.length){
+      $('status').textContent='Rijafstanden berekenen…';
+      const coords = [s, ...ok.map(x=>x.p)].map(p=>p.lon+','+p.lat).join(';');
+      const url = 'https://router.project-osrm.org/table/v1/driving/'+coords+'?sources=0&annotations=distance,duration';
+      const res = await fetch(url);
+      const j = await res.json();
+      if (j.code !== 'Ok'){ $('status').textContent='Routedienst gaf een fout. Probeer het zo opnieuw.'; return; }
+      ok.forEach((x,i)=>{ x.d = j.distances[0][i+1]; x.t = j.durations[0][i+1]; });
+    }
+
+    const k = $('by').value;
+    sorted = ok.filter(x=>x.d!=null).sort((a,b)=>a[k]-b[k]);
+    const bad = items.filter(x=>x.d==null);
+
+    const frag = document.createDocumentFragment();
+    sorted.forEach(x=>{
+      const li=document.createElement('li');
+      li.innerHTML='<span></span><span class="km"></span>';
+      li.children[0].textContent=x.addr;
+      li.children[1].textContent=fmtKm(x.d)+' · '+fmtT(x.t);
+      frag.appendChild(li);
+    });
+    bad.forEach(x=>{
+      const li=document.createElement('li'); li.className='err';
+      li.innerHTML='<span></span><span class="km">niet gevonden</span>';
+      li.children[0].textContent=x.addr; frag.appendChild(li);
+    });
+    $('out').appendChild(frag);
+    $('status').textContent='Klaar. Gesorteerd van dichtbij naar ver.';
+    $('maps').hidden=$('copy').hidden=!sorted.length;
+    $('start').dataset.s=start;
+  }catch(e){
+    $('status').textContent='Er ging iets mis. Controleer je internetverbinding.';
+  }finally{ $('go').disabled=false; }
+};
+
+$('maps').onclick = () => {
+  const start=$('start').dataset.s;
+  let stops=sorted.map(x=>x.addr);
+  let note='';
+  if (stops.length > 10){ stops=stops.slice(0,10); note='Google Maps neemt maximaal 10 stops; de eerste 10 zijn doorgestuurd.'; }
+  const dest=stops.pop();
+  const u='https://www.google.com/maps/dir/?api=1&origin='+encodeURIComponent(start)
+    +'&destination='+encodeURIComponent(dest)
+    +(stops.length?'&waypoints='+encodeURIComponent(stops.join('|')):'')
+    +'&travelmode=driving';
+  if (note) $('status').textContent=note;
+  window.location.href=u;
+};
+
+$('copy').onclick = async () => {
+  const t=sorted.map((x,i)=>`${i+1}. ${x.addr} (${fmtKm(x.d)}, ${fmtT(x.t)})`).join('\n');
+  try{ await navigator.clipboard.writeText(t); $('status').textContent='Gekopieerd.'; }
+  catch(e){ $('status').textContent='Kopiëren mislukt.'; }
+};
+</script>
+</body>
+</html>
