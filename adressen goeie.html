@@ -50,6 +50,14 @@
   ul.chips li span{flex:1;overflow-wrap:anywhere}
   ul.chips button{background:transparent;color:var(--mute);padding:4px 10px;font-size:1.2rem;line-height:1;border-radius:8px}
   .count{font-weight:600;margin:16px 0 0}
+  ul.chips li span{cursor:text}
+  ul.chips li input.edit{flex:1;padding:7px 10px;border-radius:8px}
+  ul.sugg{list-style:none;margin:6px 0 0;padding:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg)}
+  ul.sugg li{counter-increment:none;display:block;padding:0;margin:0;border:0;border-radius:0;background:none}
+  ul.sugg li::before{content:none}
+  ul.sugg li+li{border-top:1px solid var(--line)}
+  ul.sugg button{width:100%;text-align:left;background:transparent;color:var(--ink);font-weight:500;border-radius:0;padding:12px 14px}
+  ul.sugg button small{display:block;color:var(--mute);font-weight:400}
 </style>
 </head>
 <body>
@@ -66,12 +74,14 @@
 
     <label for="new">Adres toevoegen</label>
     <div class="add">
-      <input id="new" placeholder="Bijv. Tweede Slagen 98" autocomplete="off" autocapitalize="words" enterkeyhint="done">
+      <input id="new" placeholder="Bijv. Hinthamerstraat 45" autocomplete="off" autocapitalize="words" enterkeyhint="done">
       <button id="plus" type="button">Voeg toe</button>
     </div>
-    <div class="hint">Na het huisnummer plus een spatie is het adres klaar. Of tik op Enter.</div>
+    <ul class="sugg" id="sugg" hidden></ul>
+    <div class="hint">Typ de eerste letters van een straat en kies een suggestie. Na het huisnummer plus een spatie is het adres klaar.</div>
 
     <div class="count" id="count"></div>
+    <div class="hint" id="edithint" hidden>Tik op een adres om het aan te passen.</div>
     <ul class="chips" id="chips"></ul>
 
     <label for="by">Sorteren op</label>
@@ -102,36 +112,119 @@ const save = () => { try{ localStorage.setItem('entries', JSON.stringify(entries
 
 function render(){
   $('count').textContent = entries.length ? entries.length + (entries.length===1 ? ' adres' : ' adressen') : '';
+  $('edithint').hidden = !entries.length;
   const ul = $('chips'); ul.innerHTML = '';
   entries.forEach((a,i)=>{
     const li = document.createElement('li');
-    const sp = document.createElement('span'); sp.textContent = a;
+    const sp = document.createElement('span'); sp.textContent = a; sp.title='Tik om aan te passen';
+    sp.onclick = () => startEdit(li, sp, i);
     const b = document.createElement('button'); b.type='button'; b.textContent='×'; b.setAttribute('aria-label','Verwijder '+a);
     b.onclick = () => { entries.splice(i,1); save(); render(); };
     li.append(sp,b); ul.appendChild(li);
   });
 }
 
-function add(text){
-  const t = text.replace(/^\s*(\d+[.)]|[-*•])\s+/,'').trim();
+function startEdit(li, sp, i){
+  const inp = document.createElement('input');
+  inp.className='edit'; inp.value=entries[i]; inp.enterKeyHint='done'; inp.autocapitalize='words';
+  li.replaceChild(inp, sp); inp.focus(); inp.select();
+  let done = false;
+  const finish = ok => {
+    if (done) return; done = true;
+    const v = inp.value.trim();
+    if (ok) { if (v) entries[i] = v; else entries.splice(i,1); }
+    save(); render();
+  };
+  inp.addEventListener('keydown', e => {
+    if (e.key==='Enter'){ e.preventDefault(); finish(true); }
+    else if (e.key==='Escape') finish(false);
+  });
+  inp.addEventListener('blur', () => finish(true));
+}
+
+function add(text, place){
+  let t = text.replace(/^\s*(\d+[.)]|[-*•])\s+/,'').trim();
   if (!t) return;
+  if (place && !t.includes(',')) t += ', ' + place;
   if (!entries.some(e=>e.toLowerCase()===t.toLowerCase())) entries.push(t);
   save(); render();
 }
+function addMany(text){ text.split(/[\n;|]+/).forEach(x=>add(x)); }
 
-function addMany(text){ text.split(/[\n;|]+/).forEach(add); }
+/* suggesties rond Den Bosch, Empel, Rosmalen en Engelen */
+let sTimer = 0, sSeq = 0;
+function hideSugg(){ $('sugg').hidden = true; $('sugg').innerHTML = ''; }
+function clearPlace(){ const n=$('new'); delete n.dataset.place; delete n.dataset.street; }
+function addFromInput(){
+  const n = $('new');
+  add(n.value, n.dataset.place);
+  n.value = ''; clearPlace(); hideSugg();
+}
 
-$('new').addEventListener('input', e => {
-  const v = $('new').value;
-  if (/[\n;|]/.test(v)) { addMany(v); $('new').value=''; return; }
-  if (/\S\s\d+[a-zA-Z]?(-\d+)?\s$/.test(v)) { add(v); $('new').value=''; }
+function toSuggestion(p){
+  const city = p.city || p.district || p.locality || p.county || '';
+  const hn = p.housenumber || '';
+  if (p.street && hn) return {text:p.street+' '+hn, place:city, full:true, line:p.street+' '+hn, sub:city};
+  if (p.osm_key==='highway' && p.name) return {text:p.name, place:city, full:false, line:p.name, sub:city};
+  if (p.name && p.street) return {text:p.street+(hn?' '+hn:''), place:city, full:!!hn, line:p.name, sub:p.street+(hn?' '+hn:'')+', '+city};
+  if (p.name) return {text:p.name, place:city, full:true, line:p.name, sub:city};
+  return null;
+}
+
+async function suggest(q){
+  const seq = ++sSeq;
+  try{
+    const url = 'https://photon.komoot.io/api/?q='+encodeURIComponent(q)
+      +'&lat=51.69&lon=5.30&limit=10&bbox=5.15,51.60,5.50,51.78';
+    const res = await fetch(url);
+    const j = await res.json();
+    if (seq !== sSeq) return;
+    const seen = new Set(), list = [];
+    (j.features||[]).forEach(f=>{
+      const sg = toSuggestion(f.properties||{});
+      if (!sg) return;
+      const key = (sg.text+'|'+sg.place).toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key); list.push(sg);
+    });
+    renderSugg(list.slice(0,6));
+  }catch(e){ if (seq===sSeq) hideSugg(); }
+}
+
+function renderSugg(list){
+  const ul = $('sugg'); ul.innerHTML = '';
+  if (!list.length){ ul.hidden = true; return; }
+  list.forEach(sg=>{
+    const li = document.createElement('li');
+    const b = document.createElement('button'); b.type='button';
+    b.append(document.createTextNode(sg.line));
+    if (sg.sub){ const sm=document.createElement('small'); sm.textContent=sg.sub; b.appendChild(sm); }
+    b.onclick = () => {
+      const n = $('new');
+      if (sg.full){ add(sg.text, sg.place); n.value=''; clearPlace(); hideSugg(); }
+      else { n.value = sg.text+' '; n.dataset.place = sg.place; n.dataset.street = sg.text; hideSugg(); n.focus(); }
+    };
+    li.appendChild(b); ul.appendChild(li);
+  });
+  ul.hidden = false;
+}
+
+$('new').addEventListener('input', () => {
+  const n = $('new'), v = n.value;
+  if (!v.trim()){ clearPlace(); hideSugg(); return; }
+  if (/[\n;|]/.test(v)){ addMany(v); n.value=''; clearPlace(); hideSugg(); return; }
+  if (n.dataset.street && !v.startsWith(n.dataset.street)) clearPlace();
+  if (/\S\s\d+[a-zA-Z]?(-\d+)?\s$/.test(v)){ addFromInput(); return; }
+  clearTimeout(sTimer);
+  if (n.dataset.place || v.trim().length < 3){ hideSugg(); return; }
+  sTimer = setTimeout(() => suggest(v.trim()), 250);
 });
 $('new').addEventListener('paste', e => {
   const t = (e.clipboardData||window.clipboardData).getData('text');
-  if (/[\n;|]/.test(t)) { e.preventDefault(); addMany(t); }
+  if (/[\n;|]/.test(t)){ e.preventDefault(); addMany(t); }
 });
-$('new').addEventListener('keydown', e => { if (e.key==='Enter') { e.preventDefault(); add($('new').value); $('new').value=''; } });
-$('plus').onclick = () => { add($('new').value); $('new').value=''; $('new').focus(); };
+$('new').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); addFromInput(); } });
+$('plus').onclick = () => { addFromInput(); $('new').focus(); };
 $('clear').onclick = () => { entries=[]; save(); render(); $('out').innerHTML=''; $('maps').hidden=$('copy').hidden=true; $('status').textContent=''; };
 render();
 
@@ -148,7 +241,7 @@ async function geocode(q){
 }
 
 $('go').onclick = async () => {
-  if ($('new').value.trim()) { add($('new').value); $('new').value=''; }
+  if ($('new').value.trim()) addFromInput();
   const start = $('start').value.trim();
   const lines = entries.slice();
   if (!start || !lines.length){ $('status').textContent='Vul een startadres en minstens één adres in.'; return; }
